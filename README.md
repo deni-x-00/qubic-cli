@@ -204,6 +204,14 @@ Commands:
 	-qtry createevent [EVENT_DESC] [OPTION_0_DESC] [OPTION_1_DESC] [END_DATE] [TAG_ID]
 		Create a new Quottery event. EVENT_DESC max 126 bytes, OPTION_*_DESC max 64 bytes each. Game operator only.
 		END_DATE format: \"YYYY-MM-DD hh:mm:ss\" (UTC). TAG_ID is a uint16 category tag.
+	-qtry createeventgroup [GROUP_DESC] [EXPECTED_MARKET_COUNT] [MODE]
+		Create a draft event group. MODE is independent/0 or exclusive_one/1. Game operator only.
+	-qtry addmarket [EVENT_GROUP_ID] [MARKET_DESC] [OPTION_0_DESC] [OPTION_1_DESC] [END_DATE] [TAG_ID]
+		Add a binary market to a draft group. Charges feePerDay for the market duration. Game operator only.
+	-qtry openevent [EVENT_GROUP_ID]
+		Open a complete draft group and enable trading in its markets. Game operator only.
+	-qtry canceleventgroup [EVENT_GROUP_ID]
+		Cancel a draft event group and remove its child markets. Game operator only.
 	-qtry order add/remove bid/ask [EVENT_ID] [OPTION] [AMOUNT] [PRICE]
 		Place or remove a bid/ask order on Quottery. OPTION must be 0 or 1.
 	-qtry getorder bid/ask [EVENT_ID] [OPTION] [OFFSET]
@@ -214,6 +222,18 @@ Commands:
 		Get detailed info for a single event (description, options, dates, result, dispute state).
 	-qtry geteventinfobatch [EVENT_ID_1] [EVENT_ID_2] ... [EVENT_ID_N]
 		Get detailed info for up to 64 events in one request.
+	-qtry geteventgroup [EVENT_GROUP_ID]
+		Get event group metadata, child market IDs, result and dispute state.
+	-qtry getmarketeventgroup [MARKET_ID]
+		Get the event group and market index linked to a child market.
+	-qtry geteventgroupinfobatch [EVENT_GROUP_ID_1] ... [EVENT_GROUP_ID_N]
+		Get metadata for up to 64 event groups in one request.
+	-qtry publisheventresult [EVENT_GROUP_ID] [WINNING_MARKET_ID]
+		Publish the winner of an EXCLUSIVE_ONE group. Game operator only; locks the dispute deposit.
+	-qtry disputeeventresult [EVENT_GROUP_ID]
+		Dispute an EXCLUSIVE_ONE group result. Requires the dispute deposit amount.
+	-qtry resolveeventdispute [EVENT_GROUP_ID] [WINNING_MARKET_ID]
+		Vote to resolve an event group dispute. Computor only; invocation reward is refunded to a computor.
 	-qtry publishresult [EVENT_ID] [OPTION_ID]
 		Publish the result for an event. OPTION_ID must be 0 or 1. Game operator only.
 		Requires the event's end date to have passed. Locks the dispute deposit amount.
@@ -248,6 +268,12 @@ Commands:
 		Get the approved QUSD amount for an identity.
 	-qtry gettopproposals
 		Get the top governance proposals (up to 3) for the current epoch.
+
+	Event group lifecycle:
+		Create the group, add exactly EXPECTED_MARKET_COUNT binary markets, then call openevent.
+		For INDEPENDENT groups, publish and dispute each child market with the existing event commands.
+		For EXCLUSIVE_ONE groups, use publisheventresult/disputeeventresult/resolveeventdispute.
+		Finalization, reward claims and cleanup continue to operate on child EVENT_ID values.
 
 [GENERAL QUORUM PROPOSAL COMMANDS]
 	-gqmpropsetproposal <PROPOSAL_STRING>

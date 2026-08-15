@@ -65,6 +65,13 @@ void unpackDateTime(uint32_t& _year, uint8_t& _month, uint8_t& _day, uint8_t& _h
 #define QTRY_CLEAN_MEMORY 14
 #define QTRY_TRANSFER_QTRYGOV 15
 #define QTRY_UPDATE_FEE_DISCOUNT_LIST 20
+#define QTRY_CREATE_EVENT_GROUP 30
+#define QTRY_ADD_MARKET 31
+#define QTRY_OPEN_EVENT 32
+#define QTRY_PUBLISH_EVENT_RESULT 33
+#define QTRY_DISPUTE_EVENT_RESULT 34
+#define QTRY_RESOLVE_EVENT_DISPUTE 35
+#define QTRY_CANCEL_EVENT_GROUP 36
 #define QTRY_PROPOSAL_VOTE 100
 // QTRY FUNCTIONS
 #define QTRY_GET_BASIC 1
@@ -75,6 +82,9 @@ void unpackDateTime(uint32_t& _year, uint8_t& _month, uint8_t& _day, uint8_t& _h
 #define QUOTTERY_GET_USER_POSITION 6
 #define QTRY_GET_APPROVED_AMOUNT 7
 #define QTRY_GET_TOP_PROPOSALS 8
+#define QTRY_GET_EVENT_GROUP 9
+#define QTRY_GET_MARKET_EVENT_GROUP 10
+#define QTRY_GET_EVENT_GROUP_INFO_BATCH 11
 
 #define QUOTTERY_EO_GET_OPTION(eo)  ((eo) >> 63)
 #define QUOTTERY_EO_GET_EVENTID(eo) ((eo) & 0x3FFFFFFFFFFFFFFFULL)
@@ -134,6 +144,7 @@ void quotteryPrintBasicInfo(const char* nodeIp, const int nodePort)
     LOG("Burn fee: %.2f%%\n", result.burnFee / 10.0);
     LOG("================\n");
     LOG("Number of issued events: %" PRIu64 "\n", result.nIssuedEvent);
+    LOG("Number of issued event groups: %" PRIu64 "\n", result.nIssuedEventGroup);
     LOG("Shareholders revenue: %" PRIu64 "\n", result.shareholdersRevenue);
     LOG("Operation revenue: %" PRIu64 "\n", result.operationRevenue);
     LOG("Burned amount: %" PRIu64 "\n", result.burnedAmount);
@@ -370,7 +381,7 @@ static void quotteryPrintEventInfoRecord(const getEventInfo_output& result, uint
         char disputerId[128] = { 0 };
         getIdentityFromPublicKey(result.disputerInfo.pubkey, disputerId, false);
         LOG("Disputer: %s\n", disputerId);
-        LOG("Dispute amount: %" PRIu64 "\n", result.disputerInfo.amount);
+        LOG("Dispute amount: %" PRId64 "\n", result.disputerInfo.amount);
         LOG("Computors vote 0: %" PRIu32 "\n", result.computorsVote0);
         LOG("Computors vote 1: %" PRIu32 "\n", result.computorsVote1);
     }
@@ -437,6 +448,175 @@ void quotteryPrintEventInfoBatch(const char* nodeIp, int nodePort, const uint64_
         LOG("\n================\n");
         LOG("Requested eventId: %" PRIu64 "\n", paddedEventIds[i]);
         quotteryPrintEventMetaData(result.aqei[i], paddedEventIds[i]);
+    }
+}
+
+static const char* quotteryEventGroupModeName(uint8_t mode)
+{
+    switch (mode)
+    {
+    case QUOTTERY_EVENT_GROUP_MODE_INDEPENDENT: return "INDEPENDENT";
+    case QUOTTERY_EVENT_GROUP_MODE_EXCLUSIVE_ONE: return "EXCLUSIVE_ONE";
+    default: return "UNKNOWN";
+    }
+}
+
+static const char* quotteryEventGroupStatusName(uint8_t status)
+{
+    switch (status)
+    {
+    case QUOTTERY_EVENT_GROUP_STATUS_DRAFT: return "DRAFT";
+    case QUOTTERY_EVENT_GROUP_STATUS_OPEN: return "OPEN";
+    case QUOTTERY_EVENT_GROUP_STATUS_RESOLVING: return "RESOLVING";
+    case QUOTTERY_EVENT_GROUP_STATUS_FINALIZED: return "FINALIZED";
+    default: return "UNKNOWN";
+    }
+}
+
+static void quotteryPrintPackedDateTime(const char* label, uint64_t value)
+{
+    if (value == 0)
+    {
+        LOG("%s: (not set)\n", label);
+        return;
+    }
+
+    uint32_t year = 0;
+    uint8_t month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    uint16_t millisec = 0, microsec = 0;
+    unpackDateTime(year, month, day, hour, minute, second, millisec, microsec, value);
+    LOG("%s: %04u-%02u-%02u %02u:%02u:%02u UTC\n",
+        label, year, month, day, hour, minute, second);
+}
+
+static void quotteryPrintEventGroupInfoRecord(
+    const QtryEventGroupInfo& info,
+    int32_t winningMarketIndex,
+    bool exists)
+{
+    if (!exists)
+    {
+        LOG("Event group does not exist\n");
+        return;
+    }
+
+    char description[129] = {};
+    memcpy(description, info.desc, sizeof(info.desc));
+
+    LOG("Event group ID: %" PRIu64 "\n", info.eventGroupId);
+    LOG("Description: %s\n", description);
+    LOG("Mode: %s (%u)\n", quotteryEventGroupModeName(info.mode), info.mode);
+    LOG("Status: %s (%u)\n", quotteryEventGroupStatusName(info.status), info.status);
+    LOG("Markets: %u / %u\n", info.marketCount, info.expectedMarketCount);
+    LOG("Finalized markets: %u\n", info.finalizedMarketCount);
+    LOG("Archived markets: %u\n", info.archivedMarketCount);
+    LOG("Winning market index: %" PRId32 "\n", winningMarketIndex);
+    quotteryPrintPackedDateTime("Created date", info.createdDate);
+    quotteryPrintPackedDateTime("Opened date", info.openedDate);
+}
+
+void quotteryPrintEventGroup(const char* nodeIp, int nodePort, uint64_t eventGroupId)
+{
+    GetEventGroup_input input{};
+    input.eventGroupId = eventGroupId;
+    GetEventGroup_output result{};
+
+    if (!runContractFunction(nodeIp, nodePort, QUOTTERY_CONTRACT_ID, QTRY_GET_EVENT_GROUP,
+                             &input, sizeof(input), &result, sizeof(result)))
+    {
+        LOG("Failed to get event group %" PRIu64 "\n", eventGroupId);
+        return;
+    }
+
+    if (!result.exists)
+    {
+        LOG("Event group %" PRIu64 " does not exist\n", eventGroupId);
+        return;
+    }
+
+    quotteryPrintEventGroupInfoRecord(result.eventGroupInfo, result.winningMarketIndex, true);
+    if (result.winningMarketIndex >= 0)
+    {
+        LOG("Winning market ID: %" PRIu64 "\n", result.winningMarketId);
+        LOG("Publish tick: %" PRIu32 "\n", result.publishTickTime);
+    }
+
+    if (!isZeroPubkey(result.disputerInfo.pubkey))
+    {
+        char disputerId[128] = {};
+        getIdentityFromPublicKey(result.disputerInfo.pubkey, disputerId, false);
+        LOG("Disputer: %s\n", disputerId);
+        LOG("Dispute amount: %" PRId64 "\n", result.disputerInfo.amount);
+    }
+
+    LOG("Market IDs:\n");
+    const size_t marketCount = std::min<size_t>(
+        result.eventGroupInfo.marketCount,
+        QUOTTERY_MAX_MARKETS_PER_EVENT_GROUP);
+    for (size_t i = 0; i < marketCount; ++i)
+    {
+        LOG("  [%zu] %" PRIu64 "\n", i, result.markets.marketIds[i]);
+    }
+    if (marketCount == 0)
+    {
+        LOG("  (none)\n");
+    }
+}
+
+void quotteryPrintMarketEventGroup(const char* nodeIp, int nodePort, uint64_t marketId)
+{
+    GetMarketEventGroup_input input{};
+    input.marketId = marketId;
+    GetMarketEventGroup_output result{};
+
+    if (!runContractFunction(nodeIp, nodePort, QUOTTERY_CONTRACT_ID, QTRY_GET_MARKET_EVENT_GROUP,
+                             &input, sizeof(input), &result, sizeof(result)))
+    {
+        LOG("Failed to get event group for market %" PRIu64 "\n", marketId);
+        return;
+    }
+
+    if (!result.exists)
+    {
+        LOG("Market %" PRIu64 " is not linked to an event group\n", marketId);
+        return;
+    }
+
+    LOG("Market ID: %" PRIu64 "\n", marketId);
+    LOG("Event group ID: %" PRIu64 "\n", result.marketGroupLink.eventGroupId);
+    LOG("Market index: %u\n", result.marketGroupLink.marketIndex);
+    LOG("Group mode: %s (%u)\n", quotteryEventGroupModeName(result.mode), result.mode);
+    LOG("Group status: %s (%u)\n", quotteryEventGroupStatusName(result.status), result.status);
+}
+
+void quotteryPrintEventGroupInfoBatch(
+    const char* nodeIp,
+    int nodePort,
+    const uint64_t* eventGroupIds,
+    size_t count)
+{
+    GetEventGroupInfoBatch_input input{};
+    for (size_t i = 0; i < count && i < 64; ++i)
+    {
+        input.eventGroupIds[i] = eventGroupIds[i];
+    }
+
+    GetEventGroupInfoBatch_output result{};
+    if (!runContractFunction(nodeIp, nodePort, QUOTTERY_CONTRACT_ID, QTRY_GET_EVENT_GROUP_INFO_BATCH,
+                             &input, sizeof(input), &result, sizeof(result)))
+    {
+        LOG("Failed to get event group info batch\n");
+        return;
+    }
+
+    for (size_t i = 0; i < count && i < 64; ++i)
+    {
+        LOG("\n================\n");
+        LOG("Requested event group ID: %" PRIu64 "\n", eventGroupIds[i]);
+        quotteryPrintEventGroupInfoRecord(
+            result.eventGroupInfos[i],
+            result.winningMarketIndices[i],
+            result.exists[i] != 0);
     }
 }
 
@@ -624,6 +804,405 @@ static bool isCurrentUtcAfterPackedDateTime(uint64_t packedDateTime)
     packDateTime(nowYear, nowMonth, nowDay, nowHour, nowMinute, nowSecond, 0, 0, nowPacked);
 
     return nowPacked >= packedDateTime;
+}
+
+static bool quotteryParseUtcDateTime(
+    const std::string& text,
+    uint64_t& packedDateTime,
+    std::time_t& timestamp)
+{
+    const char* value = text.c_str();
+    if (text.size() != 19 || value[4] != '-' || value[7] != '-' || value[10] != ' ' ||
+        value[13] != ':' || value[16] != ':')
+    {
+        LOG("Error: invalid date-time format. Expected: YYYY-MM-DD hh:mm:ss (UTC)\n");
+        return false;
+    }
+
+    const int digitPositions[] = { 0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18 };
+    for (int position : digitPositions)
+    {
+        if (!isdigit(static_cast<unsigned char>(value[position])))
+        {
+            LOG("Error: invalid date-time format. Expected: YYYY-MM-DD hh:mm:ss (UTC)\n");
+            return false;
+        }
+    }
+
+    const uint32_t year = (value[0] - '0') * 1000 + (value[1] - '0') * 100 +
+        (value[2] - '0') * 10 + (value[3] - '0');
+    const uint8_t month = static_cast<uint8_t>((value[5] - '0') * 10 + (value[6] - '0'));
+    const uint8_t day = static_cast<uint8_t>((value[8] - '0') * 10 + (value[9] - '0'));
+    const uint8_t hour = static_cast<uint8_t>((value[11] - '0') * 10 + (value[12] - '0'));
+    const uint8_t minute = static_cast<uint8_t>((value[14] - '0') * 10 + (value[15] - '0'));
+    const uint8_t second = static_cast<uint8_t>((value[17] - '0') * 10 + (value[18] - '0'));
+
+    std::tm utc{};
+    utc.tm_year = static_cast<int>(year) - 1900;
+    utc.tm_mon = month - 1;
+    utc.tm_mday = day;
+    utc.tm_hour = hour;
+    utc.tm_min = minute;
+    utc.tm_sec = second;
+#if defined(_WIN32)
+    timestamp = _mkgmtime(&utc);
+#else
+    timestamp = timegm(&utc);
+#endif
+    if (timestamp == static_cast<std::time_t>(-1) ||
+        utc.tm_year != static_cast<int>(year) - 1900 || utc.tm_mon != month - 1 ||
+        utc.tm_mday != day || utc.tm_hour != hour || utc.tm_min != minute || utc.tm_sec != second)
+    {
+        LOG("Error: invalid UTC date-time value: %s\n", text.c_str());
+        return false;
+    }
+
+    packDateTime(year, month, day, hour, minute, second, 0, 0, packedDateTime);
+    return true;
+}
+
+static bool quotteryValidateGameOperator(
+    QCPtr& qc,
+    const char* seed,
+    qtryBasicInfo_output& basic)
+{
+    uint8_t subSeed[32] = {};
+    uint8_t privateKey[32] = {};
+    uint8_t sourcePublicKey[32] = {};
+    getSubseedFromSeed(reinterpret_cast<const uint8_t*>(seed), subSeed);
+    getPrivateKeyFromSubSeed(subSeed, privateKey);
+    getPublicKeyFromPrivateKey(privateKey, sourcePublicKey);
+
+    quotteryGetBasicInfo(qc, basic);
+    if (isArrayZero(reinterpret_cast<uint8_t*>(&basic), sizeof(basic)))
+    {
+        LOG("Error: failed to get Quottery basic info\n");
+        return false;
+    }
+
+    if (memcmp(sourcePublicKey, basic.gameOperator, sizeof(sourcePublicKey)) != 0)
+    {
+        char sourceIdentity[128] = {};
+        char goIdentity[128] = {};
+        getIdentityFromPublicKey(sourcePublicKey, sourceIdentity, false);
+        getIdentityFromPublicKey(basic.gameOperator, goIdentity, false);
+        LOG("Error: seed is not the game operator\n");
+        LOG("Current identity: %s\n", sourceIdentity);
+        LOG("Game operator:    %s\n", goIdentity);
+        return false;
+    }
+    return true;
+}
+
+static bool quotteryGetEventGroupData(
+    const char* nodeIp,
+    int nodePort,
+    uint64_t eventGroupId,
+    GetEventGroup_output& result)
+{
+    GetEventGroup_input input{};
+    input.eventGroupId = eventGroupId;
+    memset(&result, 0, sizeof(result));
+    return runContractFunction(nodeIp, nodePort, QUOTTERY_CONTRACT_ID, QTRY_GET_EVENT_GROUP,
+                               &input, sizeof(input), &result, sizeof(result));
+}
+
+void qtryCreateEventGroup(
+    const char* nodeIp,
+    int nodePort,
+    const char* seed,
+    uint32_t scheduledTickOffset,
+    const std::string& description,
+    uint16_t expectedMarketCount,
+    uint8_t mode)
+{
+    if (expectedMarketCount == 0 || expectedMarketCount > QUOTTERY_MAX_MARKETS_PER_EVENT_GROUP ||
+        mode > QUOTTERY_EVENT_GROUP_MODE_EXCLUSIVE_ONE ||
+        (mode == QUOTTERY_EVENT_GROUP_MODE_EXCLUSIVE_ONE && expectedMarketCount < 2))
+    {
+        LOG("Error: invalid event group mode or market count\n");
+        return;
+    }
+
+    auto qc = make_qc(nodeIp, nodePort);
+    qtryBasicInfo_output basic{};
+    if (!quotteryValidateGameOperator(qc, seed, basic))
+    {
+        return;
+    }
+
+    CreateEventGroup_input input{};
+    memcpy(input.desc, description.c_str(), std::min(description.size(), sizeof(input.desc)));
+    input.expectedMarketCount = expectedMarketCount;
+    input.mode = mode;
+
+    LOG("Sending QTRY create event group\n");
+    LOG("description: %s\n", description.c_str());
+    LOG("expected markets: %u\n", expectedMarketCount);
+    LOG("mode: %s (%u)\n", quotteryEventGroupModeName(mode), mode);
+
+    makeContractTransaction(nodeIp, nodePort, seed,
+        QUOTTERY_CONTRACT_ID, QTRY_CREATE_EVENT_GROUP, 0,
+        sizeof(input), &input, scheduledTickOffset, &qc);
+}
+
+void qtryAddMarket(
+    const char* nodeIp,
+    int nodePort,
+    const char* seed,
+    uint32_t scheduledTickOffset,
+    uint64_t eventGroupId,
+    const std::string& marketDescription,
+    const std::string& option0Description,
+    const std::string& option1Description,
+    const std::string& endDate,
+    uint16_t tagId)
+{
+    GetEventGroup_output group{};
+    if (!quotteryGetEventGroupData(nodeIp, nodePort, eventGroupId, group))
+    {
+        LOG("Error: failed to get event group %" PRIu64 "\n", eventGroupId);
+        return;
+    }
+    if (!group.exists || group.eventGroupInfo.status != QUOTTERY_EVENT_GROUP_STATUS_DRAFT)
+    {
+        LOG("Error: event group %" PRIu64 " does not exist or is not in DRAFT state\n", eventGroupId);
+        return;
+    }
+    if (group.eventGroupInfo.marketCount >= group.eventGroupInfo.expectedMarketCount)
+    {
+        LOG("Error: event group %" PRIu64 " already has all expected markets\n", eventGroupId);
+        return;
+    }
+
+    uint64_t packedEndDate = 0;
+    std::time_t endTimestamp = 0;
+    if (!quotteryParseUtcDateTime(endDate, packedEndDate, endTimestamp))
+    {
+        return;
+    }
+    const std::time_t now = std::time(nullptr);
+    if (endTimestamp <= now)
+    {
+        LOG("Error: market end date must be in the future\n");
+        return;
+    }
+
+    auto qc = make_qc(nodeIp, nodePort);
+    qtryBasicInfo_output basic{};
+    if (!quotteryValidateGameOperator(qc, seed, basic))
+    {
+        return;
+    }
+
+    const uint64_t durationSeconds = static_cast<uint64_t>(endTimestamp - now);
+    const uint64_t durationDays = (durationSeconds + 86399ULL) / 86400ULL;
+    if (durationDays != 0 && basic.feePerDay > static_cast<uint64_t>(INT64_MAX) / durationDays)
+    {
+        LOG("Error: calculated market creation fee exceeds int64 range\n");
+        return;
+    }
+    const int64_t fee = static_cast<int64_t>(durationDays * basic.feePerDay);
+
+    AddMarket_input input{};
+    input.eventGroupId = eventGroupId;
+    input.qei.endDate = packedEndDate;
+    memcpy(input.qei.desc, marketDescription.c_str(),
+        std::min(marketDescription.size(), sizeof(input.qei.desc) - sizeof(tagId)));
+    input.qei.desc[126] = static_cast<uint8_t>(tagId & 0xff);
+    input.qei.desc[127] = static_cast<uint8_t>((tagId >> 8) & 0xff);
+    memcpy(input.qei.option0Desc, option0Description.c_str(),
+        std::min(option0Description.size(), sizeof(input.qei.option0Desc)));
+    memcpy(input.qei.option1Desc, option1Description.c_str(),
+        std::min(option1Description.size(), sizeof(input.qei.option1Desc)));
+
+    LOG("Sending QTRY add market\n");
+    LOG("event group ID: %" PRIu64 "\n", eventGroupId);
+    LOG("end date: %s UTC\n", endDate.c_str());
+    LOG("tag ID: %u\n", tagId);
+    LOG("creation fee: %" PRId64 "\n", fee);
+
+    makeContractTransaction(nodeIp, nodePort, seed,
+        QUOTTERY_CONTRACT_ID, QTRY_ADD_MARKET, fee,
+        sizeof(input), &input, scheduledTickOffset, &qc);
+}
+
+void qtryOpenEventGroup(
+    const char* nodeIp,
+    int nodePort,
+    const char* seed,
+    uint32_t scheduledTickOffset,
+    uint64_t eventGroupId)
+{
+    GetEventGroup_output group{};
+    if (!quotteryGetEventGroupData(nodeIp, nodePort, eventGroupId, group) || !group.exists)
+    {
+        LOG("Error: event group %" PRIu64 " does not exist\n", eventGroupId);
+        return;
+    }
+    if (group.eventGroupInfo.status != QUOTTERY_EVENT_GROUP_STATUS_DRAFT ||
+        group.eventGroupInfo.marketCount != group.eventGroupInfo.expectedMarketCount)
+    {
+        LOG("Error: event group must be DRAFT and contain all expected markets before opening\n");
+        return;
+    }
+
+    auto qc = make_qc(nodeIp, nodePort);
+    qtryBasicInfo_output basic{};
+    if (!quotteryValidateGameOperator(qc, seed, basic))
+    {
+        return;
+    }
+
+    EventGroupId_input input{};
+    input.eventGroupId = eventGroupId;
+    LOG("Sending QTRY open event group %" PRIu64 "\n", eventGroupId);
+    makeContractTransaction(nodeIp, nodePort, seed,
+        QUOTTERY_CONTRACT_ID, QTRY_OPEN_EVENT, 0,
+        sizeof(input), &input, scheduledTickOffset, &qc);
+}
+
+void qtryPublishEventResult(
+    const char* nodeIp,
+    int nodePort,
+    const char* seed,
+    uint32_t scheduledTickOffset,
+    uint64_t eventGroupId,
+    uint64_t winningMarketId)
+{
+    GetEventGroup_output group{};
+    if (!quotteryGetEventGroupData(nodeIp, nodePort, eventGroupId, group) || !group.exists)
+    {
+        LOG("Error: event group %" PRIu64 " does not exist\n", eventGroupId);
+        return;
+    }
+    if (group.eventGroupInfo.mode != QUOTTERY_EVENT_GROUP_MODE_EXCLUSIVE_ONE ||
+        group.eventGroupInfo.status != QUOTTERY_EVENT_GROUP_STATUS_OPEN)
+    {
+        LOG("Error: group publish requires an OPEN EXCLUSIVE_ONE event group\n");
+        return;
+    }
+
+    bool winningMarketFound = false;
+    for (size_t i = 0; i < group.eventGroupInfo.marketCount && i < QUOTTERY_MAX_MARKETS_PER_EVENT_GROUP; ++i)
+    {
+        if (group.markets.marketIds[i] == winningMarketId)
+        {
+            winningMarketFound = true;
+            break;
+        }
+    }
+    if (!winningMarketFound)
+    {
+        LOG("Error: market %" PRIu64 " does not belong to event group %" PRIu64 "\n",
+            winningMarketId, eventGroupId);
+        return;
+    }
+
+    auto qc = make_qc(nodeIp, nodePort);
+    qtryBasicInfo_output basic{};
+    if (!quotteryValidateGameOperator(qc, seed, basic))
+    {
+        return;
+    }
+    if (basic.depositAmountForDispute > static_cast<uint64_t>(INT64_MAX))
+    {
+        LOG("Error: dispute deposit exceeds int64 range\n");
+        return;
+    }
+
+    EventGroupResult_input input{};
+    input.eventGroupId = eventGroupId;
+    input.winningMarketId = winningMarketId;
+    LOG("Sending QTRY publish event group result\n");
+    LOG("event group ID: %" PRIu64 "\n", eventGroupId);
+    LOG("winning market ID: %" PRIu64 "\n", winningMarketId);
+    LOG("deposit: %" PRIu64 "\n", basic.depositAmountForDispute);
+    makeContractTransaction(nodeIp, nodePort, seed,
+        QUOTTERY_CONTRACT_ID, QTRY_PUBLISH_EVENT_RESULT,
+        static_cast<int64_t>(basic.depositAmountForDispute),
+        sizeof(input), &input, scheduledTickOffset, &qc);
+}
+
+void qtryDisputeEventResult(
+    const char* nodeIp,
+    int nodePort,
+    const char* seed,
+    uint32_t scheduledTickOffset,
+    uint64_t eventGroupId)
+{
+    auto qc = make_qc(nodeIp, nodePort);
+    qtryBasicInfo_output basic{};
+    quotteryGetBasicInfo(qc, basic);
+    if (isArrayZero(reinterpret_cast<uint8_t*>(&basic), sizeof(basic)))
+    {
+        LOG("Error: failed to get Quottery basic info\n");
+        return;
+    }
+    if (basic.depositAmountForDispute > static_cast<uint64_t>(INT64_MAX))
+    {
+        LOG("Error: dispute deposit exceeds int64 range\n");
+        return;
+    }
+
+    EventGroupId_input input{};
+    input.eventGroupId = eventGroupId;
+    LOG("Sending QTRY dispute event group result\n");
+    LOG("event group ID: %" PRIu64 "\n", eventGroupId);
+    LOG("deposit: %" PRIu64 "\n", basic.depositAmountForDispute);
+    makeContractTransaction(nodeIp, nodePort, seed,
+        QUOTTERY_CONTRACT_ID, QTRY_DISPUTE_EVENT_RESULT,
+        static_cast<int64_t>(basic.depositAmountForDispute),
+        sizeof(input), &input, scheduledTickOffset, &qc);
+}
+
+void qtryResolveEventDispute(
+    const char* nodeIp,
+    int nodePort,
+    const char* seed,
+    uint32_t scheduledTickOffset,
+    uint64_t eventGroupId,
+    uint64_t winningMarketId)
+{
+    EventGroupResult_input input{};
+    input.eventGroupId = eventGroupId;
+    input.winningMarketId = winningMarketId;
+    LOG("Sending QTRY resolve event group dispute vote\n");
+    LOG("event group ID: %" PRIu64 "\n", eventGroupId);
+    LOG("winning market ID: %" PRIu64 "\n", winningMarketId);
+    makeContractTransaction(nodeIp, nodePort, seed,
+        QUOTTERY_CONTRACT_ID, QTRY_RESOLVE_EVENT_DISPUTE, 10000000,
+        sizeof(input), &input, scheduledTickOffset);
+}
+
+void qtryCancelEventGroup(
+    const char* nodeIp,
+    int nodePort,
+    const char* seed,
+    uint32_t scheduledTickOffset,
+    uint64_t eventGroupId)
+{
+    GetEventGroup_output group{};
+    if (!quotteryGetEventGroupData(nodeIp, nodePort, eventGroupId, group) || !group.exists ||
+        group.eventGroupInfo.status != QUOTTERY_EVENT_GROUP_STATUS_DRAFT)
+    {
+        LOG("Error: event group %" PRIu64 " does not exist or is not in DRAFT state\n", eventGroupId);
+        return;
+    }
+
+    auto qc = make_qc(nodeIp, nodePort);
+    qtryBasicInfo_output basic{};
+    if (!quotteryValidateGameOperator(qc, seed, basic))
+    {
+        return;
+    }
+
+    EventGroupId_input input{};
+    input.eventGroupId = eventGroupId;
+    LOG("Sending QTRY cancel event group %" PRIu64 "\n", eventGroupId);
+    makeContractTransaction(nodeIp, nodePort, seed,
+        QUOTTERY_CONTRACT_ID, QTRY_CANCEL_EVENT_GROUP, 0,
+        sizeof(input), &input, scheduledTickOffset, &qc);
 }
 
 void qtryPublishResult(const char* nodeIp, int nodePort, const char* seed, uint32_t scheduledTickOffset, uint64_t eventId, uint64_t result)
@@ -1667,6 +2246,89 @@ void quotteryEntryPoint(int argc, char** argv, const char* nodeIp, int nodePort,
             return;
         }
 
+        if (strcmp(argv[i], "createeventgroup") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 3, "createeventgroup"))
+                return;
+
+            uint64_t expectedMarketCountRaw = 0;
+            if (!tryParseUint64Arg(argv[i + 2], expectedMarketCountRaw, "expectedMarketCount") ||
+                expectedMarketCountRaw > UINT16_MAX)
+            {
+                LOG("Error: expectedMarketCount must fit uint16\n");
+                return;
+            }
+
+            uint8_t mode = 0;
+            if (strcmp(argv[i + 3], "independent") == 0 || strcmp(argv[i + 3], "0") == 0)
+            {
+                mode = QUOTTERY_EVENT_GROUP_MODE_INDEPENDENT;
+            }
+            else if (strcmp(argv[i + 3], "exclusive_one") == 0 || strcmp(argv[i + 3], "1") == 0)
+            {
+                mode = QUOTTERY_EVENT_GROUP_MODE_EXCLUSIVE_ONE;
+            }
+            else
+            {
+                LOG("Error: mode must be independent, exclusive_one, 0, or 1\n");
+                return;
+            }
+
+            qtryCreateEventGroup(nodeIp, nodePort, seed, scheduledTickOffset,
+                argv[i + 1], static_cast<uint16_t>(expectedMarketCountRaw), mode);
+            return;
+        }
+
+        if (strcmp(argv[i], "addmarket") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 6, "addmarket"))
+                return;
+
+            uint64_t eventGroupId = 0;
+            uint64_t tagIdRaw = 0;
+            if (!tryParseUint64Arg(argv[i + 1], eventGroupId, "eventGroupId") ||
+                !tryParseUint64Arg(argv[i + 6], tagIdRaw, "tagId"))
+            {
+                return;
+            }
+            if (tagIdRaw > UINT16_MAX)
+            {
+                LOG("Error: tagId must fit uint16\n");
+                return;
+            }
+
+            qtryAddMarket(nodeIp, nodePort, seed, scheduledTickOffset,
+                eventGroupId, argv[i + 2], argv[i + 3], argv[i + 4], argv[i + 5],
+                static_cast<uint16_t>(tagIdRaw));
+            return;
+        }
+
+        if (strcmp(argv[i], "openevent") == 0 || strcmp(argv[i], "openeventgroup") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 1, "openevent"))
+                return;
+
+            uint64_t eventGroupId = 0;
+            if (!tryParseUint64Arg(argv[i + 1], eventGroupId, "eventGroupId"))
+                return;
+
+            qtryOpenEventGroup(nodeIp, nodePort, seed, scheduledTickOffset, eventGroupId);
+            return;
+        }
+
+        if (strcmp(argv[i], "canceleventgroup") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 1, "canceleventgroup"))
+                return;
+
+            uint64_t eventGroupId = 0;
+            if (!tryParseUint64Arg(argv[i + 1], eventGroupId, "eventGroupId"))
+                return;
+
+            qtryCancelEventGroup(nodeIp, nodePort, seed, scheduledTickOffset, eventGroupId);
+            return;
+        }
+
         if (strcmp(argv[i], "order") == 0)
         {
             if (!hasRequiredParameters(i, argc, 6, "order"))
@@ -1792,6 +2454,102 @@ void quotteryEntryPoint(int argc, char** argv, const char* nodeIp, int nodePort,
             }
 
             quotteryPrintEventInfoBatch(nodeIp, nodePort, eventIds, count);
+            return;
+        }
+
+        if (strcmp(argv[i], "geteventgroup") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 1, "geteventgroup"))
+                return;
+
+            uint64_t eventGroupId = 0;
+            if (!tryParseUint64Arg(argv[i + 1], eventGroupId, "eventGroupId"))
+                return;
+
+            quotteryPrintEventGroup(nodeIp, nodePort, eventGroupId);
+            return;
+        }
+
+        if (strcmp(argv[i], "getmarketeventgroup") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 1, "getmarketeventgroup"))
+                return;
+
+            uint64_t marketId = 0;
+            if (!tryParseUint64Arg(argv[i + 1], marketId, "marketId"))
+                return;
+
+            quotteryPrintMarketEventGroup(nodeIp, nodePort, marketId);
+            return;
+        }
+
+        if (strcmp(argv[i], "geteventgroupinfobatch") == 0)
+        {
+            if (!hasAtLeastRequiredParameters(i, argc, 1, "geteventgroupinfobatch"))
+                return;
+
+            uint64_t eventGroupIds[64] = {};
+            size_t count = 0;
+            int j = i + 1;
+            while (j < argc && count < 64)
+            {
+                if (!tryParseUint64Arg(argv[j], eventGroupIds[count], "eventGroupId"))
+                    return;
+                ++count;
+                ++j;
+            }
+            if (j < argc)
+            {
+                LOG("Error: geteventgroupinfobatch supports at most 64 event group ids\n");
+                return;
+            }
+
+            quotteryPrintEventGroupInfoBatch(nodeIp, nodePort, eventGroupIds, count);
+            return;
+        }
+
+        if (strcmp(argv[i], "publisheventresult") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 2, "publisheventresult"))
+                return;
+
+            uint64_t eventGroupId = 0;
+            uint64_t winningMarketId = 0;
+            if (!tryParseUint64Arg(argv[i + 1], eventGroupId, "eventGroupId") ||
+                !tryParseUint64Arg(argv[i + 2], winningMarketId, "winningMarketId"))
+                return;
+
+            qtryPublishEventResult(nodeIp, nodePort, seed, scheduledTickOffset,
+                eventGroupId, winningMarketId);
+            return;
+        }
+
+        if (strcmp(argv[i], "disputeeventresult") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 1, "disputeeventresult"))
+                return;
+
+            uint64_t eventGroupId = 0;
+            if (!tryParseUint64Arg(argv[i + 1], eventGroupId, "eventGroupId"))
+                return;
+
+            qtryDisputeEventResult(nodeIp, nodePort, seed, scheduledTickOffset, eventGroupId);
+            return;
+        }
+
+        if (strcmp(argv[i], "resolveeventdispute") == 0)
+        {
+            if (!hasRequiredParameters(i, argc, 2, "resolveeventdispute"))
+                return;
+
+            uint64_t eventGroupId = 0;
+            uint64_t winningMarketId = 0;
+            if (!tryParseUint64Arg(argv[i + 1], eventGroupId, "eventGroupId") ||
+                !tryParseUint64Arg(argv[i + 2], winningMarketId, "winningMarketId"))
+                return;
+
+            qtryResolveEventDispute(nodeIp, nodePort, seed, scheduledTickOffset,
+                eventGroupId, winningMarketId);
             return;
         }
 

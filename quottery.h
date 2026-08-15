@@ -2,6 +2,15 @@
 
 #include "structs.h"
 #define QUOTTERY_MAX_CONCURRENT_EVENT 4096
+#define QUOTTERY_MAX_MARKETS_PER_EVENT_GROUP 64
+
+constexpr uint8_t QUOTTERY_EVENT_GROUP_MODE_INDEPENDENT = 0;
+constexpr uint8_t QUOTTERY_EVENT_GROUP_MODE_EXCLUSIVE_ONE = 1;
+
+constexpr uint8_t QUOTTERY_EVENT_GROUP_STATUS_DRAFT = 0;
+constexpr uint8_t QUOTTERY_EVENT_GROUP_STATUS_OPEN = 1;
+constexpr uint8_t QUOTTERY_EVENT_GROUP_STATUS_RESOLVING = 2;
+constexpr uint8_t QUOTTERY_EVENT_GROUP_STATUS_FINALIZED = 3;
 struct qtryBasicInfo_output
 {
     uint64_t operationFee; // 4 digit number ABCD means AB.CD% | 1234 is 12.34%
@@ -15,6 +24,7 @@ struct qtryBasicInfo_output
     uint64_t antiSpamAmount;
     uint64_t depositAmountForDispute;
     uint8_t gameOperator[32];
+    uint64_t nIssuedEventGroup;
 
     static constexpr unsigned char type()
     {
@@ -40,8 +50,132 @@ struct QtryEventInfo
 struct DepositInfo
 {
     uint8_t pubkey[32];
-    uint64_t amount;
+    int64_t amount;
 };
+
+struct QtryEventGroupInfo
+{
+    uint64_t eventGroupId;
+    uint64_t createdDate;
+    uint64_t openedDate;
+    uint8_t desc[128];
+    uint16_t expectedMarketCount;
+    uint16_t marketCount;
+    uint16_t finalizedMarketCount;
+    uint16_t archivedMarketCount;
+    uint8_t mode;
+    uint8_t status;
+    uint8_t padding[6];
+};
+
+struct QtryEventGroupMarkets
+{
+    uint64_t marketIds[QUOTTERY_MAX_MARKETS_PER_EVENT_GROUP];
+};
+
+struct QtryMarketGroupLink
+{
+    uint64_t eventGroupId;
+    uint16_t marketIndex;
+    uint8_t padding[6];
+};
+
+struct GetEventGroup_input
+{
+    uint64_t eventGroupId;
+};
+
+struct GetEventGroup_output
+{
+    QtryEventGroupInfo eventGroupInfo;
+    QtryEventGroupMarkets markets;
+    int32_t winningMarketIndex;
+    uint32_t padding0;
+    uint64_t winningMarketId;
+    uint32_t publishTickTime;
+    uint32_t padding1;
+    DepositInfo disputerInfo;
+    uint8_t exists;
+    uint8_t padding2[7];
+
+    static constexpr unsigned char type()
+    {
+        return RespondContractFunction::type();
+    }
+};
+
+struct GetMarketEventGroup_input
+{
+    uint64_t marketId;
+};
+
+struct GetMarketEventGroup_output
+{
+    QtryMarketGroupLink marketGroupLink;
+    uint8_t mode;
+    uint8_t status;
+    uint8_t exists;
+    uint8_t padding[5];
+
+    static constexpr unsigned char type()
+    {
+        return RespondContractFunction::type();
+    }
+};
+
+struct GetEventGroupInfoBatch_input
+{
+    uint64_t eventGroupIds[64];
+};
+
+struct GetEventGroupInfoBatch_output
+{
+    QtryEventGroupInfo eventGroupInfos[64];
+    int8_t winningMarketIndices[64];
+    uint8_t exists[64];
+
+    static constexpr unsigned char type()
+    {
+        return RespondContractFunction::type();
+    }
+};
+
+struct CreateEventGroup_input
+{
+    uint8_t desc[128];
+    uint16_t expectedMarketCount;
+    uint8_t mode;
+    uint8_t padding[5];
+};
+
+struct AddMarket_input
+{
+    uint64_t eventGroupId;
+    QtryEventInfo qei;
+};
+
+struct EventGroupId_input
+{
+    uint64_t eventGroupId;
+};
+
+struct EventGroupResult_input
+{
+    uint64_t eventGroupId;
+    uint64_t winningMarketId;
+};
+
+static_assert(sizeof(qtryBasicInfo_output) == 120, "Unexpected Quottery BasicInfo layout");
+static_assert(sizeof(QtryEventInfo) == 280, "Unexpected Quottery event layout");
+static_assert(sizeof(DepositInfo) == 40, "Unexpected Quottery deposit layout");
+static_assert(sizeof(QtryEventGroupInfo) == 168, "Unexpected Quottery event group layout");
+static_assert(sizeof(QtryEventGroupMarkets) == 512, "Unexpected Quottery event group markets layout");
+static_assert(sizeof(QtryMarketGroupLink) == 16, "Unexpected Quottery market link layout");
+static_assert(sizeof(GetEventGroup_output) == 752, "Unexpected GetEventGroup output layout");
+static_assert(sizeof(GetMarketEventGroup_output) == 24, "Unexpected GetMarketEventGroup output layout");
+static_assert(sizeof(GetEventGroupInfoBatch_output) == 10880, "Unexpected event group batch layout");
+static_assert(sizeof(CreateEventGroup_input) == 136, "Unexpected CreateEventGroup input layout");
+static_assert(sizeof(AddMarket_input) == 288, "Unexpected AddMarket input layout");
 
 struct getEventInfo_output
 {
